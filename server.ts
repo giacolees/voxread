@@ -65,6 +65,11 @@ db.exec(`
   SELECT crsql_as_crr('highlights');
 `);
 
+// Apply DEVICE_NAME env var if provided
+if (process.env.DEVICE_NAME) {
+  db.prepare("UPDATE device SET name = ?").run(process.env.DEVICE_NAME);
+}
+
 // Read device identity
 const { id: DEVICE_ID, name: DEVICE_NAME } = db
   .prepare("SELECT id, name FROM device LIMIT 1")
@@ -72,8 +77,9 @@ const { id: DEVICE_ID, name: DEVICE_NAME } = db
 
 console.log(`Device: ${DEVICE_NAME} (${DEVICE_ID})`);
 
-// Peer tracking: peerId -> peerUrl
+// Peer tracking: peerId -> { url, name }
 const knownPeers = new Map<string, string>();
+const knownPeerNames = new Map<string, string>();
 
 // ── Serialization helpers for crsql_changes ──────────────────────────────────
 
@@ -318,7 +324,7 @@ async function startServer() {
         .get(peerId) as { lastSynced: number } | undefined;
       return {
         id: peerId,
-        name: `VoxRead-${peerId.slice(0, 4)}`,
+        name: knownPeerNames.get(peerId) ?? `VoxRead-${peerId.slice(0, 4)}`,
         lastSynced: state?.lastSynced ?? 0,
       };
     });
@@ -368,8 +374,9 @@ function startMDNS() {
     const ipv4 = svc.addresses?.find((a) => !a.includes(":"));
     const host = ipv4 ?? svc.host;
     const peerUrl = `http://${host}:${svc.port}`;
-    console.log(`Discovered peer: ${DEVICE_NAME} → ${peerId} at ${peerUrl}`);
+    console.log(`Discovered peer: ${svc.name} → ${peerId} at ${peerUrl}`);
     knownPeers.set(peerId, peerUrl);
+    knownPeerNames.set(peerId, svc.name);
     syncWithPeer(peerUrl, peerId);
   });
 
@@ -378,6 +385,7 @@ function startMDNS() {
     if (peerId) {
       console.log(`Peer went offline: ${peerId}`);
       knownPeers.delete(peerId);
+      knownPeerNames.delete(peerId);
     }
   });
 
@@ -399,6 +407,7 @@ function startMDNS() {
       } catch {
         console.log(`Peer ${peerId} unreachable — removing`);
         knownPeers.delete(peerId);
+        knownPeerNames.delete(peerId);
       }
     }
   }, 8000);
