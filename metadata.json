@@ -1,0 +1,7 @@
+{
+  "name": "VoxRead",
+  "description": "A cross-platform reading app with voice-activated highlighting, offline support, and cloud sync.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
