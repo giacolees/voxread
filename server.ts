@@ -13,7 +13,9 @@ const PORT = parseInt(process.env.PORT ?? "3000", 10);
 
 // Open database and load cr-sqlite extension
 // Port-scoped filename so two instances on the same machine don't share a DB
-const db = new Database(`voxread-${PORT}.db`);
+// DATA_DIR can be set to a mounted volume path in Docker (e.g. /data)
+const DATA_DIR = process.env.DATA_DIR ?? ".";
+const db = new Database(path.join(DATA_DIR, `voxread-${PORT}.db`));
 db.loadExtension(extensionPath);
 
 // Initialize schema

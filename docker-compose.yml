@@ -1,0 +1,17 @@
+services:
+  voxread:
+    build: .
+    ports:
+      - "3000:3000"
+    volumes:
+      - voxread-data:/data
+    environment:
+      - PORT=3000
+      - DATA_DIR=/data
+      # - DEVICE_NAME=VoxRead-Docker
+
+    # Uncomment on Linux for mDNS peer discovery to work across the LAN:
+    # network_mode: host
+
+volumes:
+  voxread-data:
