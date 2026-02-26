@@ -312,14 +312,16 @@ async function startServer() {
   });
 
   app.get("/sync/status", (_req, res) => {
-    const rows = db
-      .prepare("SELECT peer_id as id, last_synced_at as lastSynced FROM sync_state")
-      .all() as { id: string; lastSynced: number }[];
-    const peers = rows.map((p) => ({
-      id: p.id,
-      name: `VoxRead-${p.id.slice(0, 4)}`,
-      lastSynced: p.lastSynced,
-    }));
+    const peers = Array.from(knownPeers.keys()).map((peerId) => {
+      const state = db
+        .prepare("SELECT last_synced_at as lastSynced FROM sync_state WHERE peer_id = ?")
+        .get(peerId) as { lastSynced: number } | undefined;
+      return {
+        id: peerId,
+        name: `VoxRead-${peerId.slice(0, 4)}`,
+        lastSynced: state?.lastSynced ?? 0,
+      };
+    });
     res.json({ peers });
   });
 
@@ -385,6 +387,21 @@ function startMDNS() {
       syncWithPeer(url, id);
     }
   }, 2000);
+
+  // Heartbeat: evict peers that no longer respond
+  setInterval(async () => {
+    for (const [peerId, peerUrl] of knownPeers.entries()) {
+      try {
+        const res = await fetch(`${peerUrl}/sync/info`, {
+          signal: AbortSignal.timeout(2000),
+        });
+        if (!res.ok) knownPeers.delete(peerId);
+      } catch {
+        console.log(`Peer ${peerId} unreachable — removing`);
+        knownPeers.delete(peerId);
+      }
+    }
+  }, 8000);
 
   // Graceful shutdown
   process.on("SIGINT", () => {
