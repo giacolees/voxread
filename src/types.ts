@@ -3,6 +3,7 @@ export interface Bookmark {
   url: string;
   title: string;
   content: string;
+  content_type: 'markdown' | 'pdf';
   category: string;
   status: 'unread' | 'reading' | 'read';
   progress: number;

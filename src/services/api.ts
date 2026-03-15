@@ -33,7 +33,7 @@ export const api = {
     });
   },
 
-  async fetchContent(url: string): Promise<{ html: string }> {
+  async fetchContent(url: string): Promise<{ content: string; content_type: 'markdown' | 'pdf'; title: string }> {
     const res = await fetch(`${API_BASE}/fetch-content?url=${encodeURIComponent(url)}`);
     if (!res.ok) throw new Error('Failed to fetch content');
     return res.json();

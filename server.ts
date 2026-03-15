@@ -5,6 +5,12 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { extensionPath } from "@vlcn.io/crsqlite/nodejs-helper.js";
 import { Bonjour } from "bonjour-service";
+import { JSDOM } from "jsdom";
+import { Readability } from "@mozilla/readability";
+import TurndownService from "turndown";
+import puppeteer from "puppeteer-extra";
+import StealthPlugin from "puppeteer-extra-plugin-stealth";
+puppeteer.use(StealthPlugin());
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -32,6 +38,7 @@ db.exec(`
     url TEXT,
     title TEXT,
     content TEXT,
+    content_type TEXT DEFAULT 'markdown',
     category TEXT DEFAULT 'to read',
     status TEXT DEFAULT 'unread',
     progress REAL DEFAULT 0,
@@ -66,6 +73,13 @@ db.exec(`
   SELECT crsql_as_crr('bookmarks');
   SELECT crsql_as_crr('highlights');
 `);
+
+// Migrate existing databases: add content_type column if missing
+try {
+  db.exec("ALTER TABLE bookmarks ADD COLUMN content_type TEXT DEFAULT 'markdown'");
+} catch {
+  // Column already exists — safe to ignore
+}
 
 // Apply DEVICE_NAME env var if provided
 if (process.env.DEVICE_NAME) {
@@ -204,16 +218,17 @@ async function startServer() {
   });
 
   app.post("/api/bookmarks", (req, res) => {
-    const { id, url, title, content, category } = req.body;
+    const { id, url, title, content, content_type, category } = req.body;
     db.prepare(`
-      INSERT INTO bookmarks (id, user_id, url, title, content, category)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO bookmarks (id, user_id, url, title, content, content_type, category)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         title=excluded.title,
         content=excluded.content,
+        content_type=excluded.content_type,
         category=excluded.category,
         updated_at=CURRENT_TIMESTAMP
-    `).run(id, MOCK_USER_ID, url, title, content, category);
+    `).run(id, MOCK_USER_ID, url, title, content, content_type ?? 'markdown', category);
     res.json({ success: true });
     // Fan-out sync to all known peers (fire-and-forget)
     for (const [peerId, peerUrl] of knownPeers.entries()) {
@@ -255,9 +270,92 @@ async function startServer() {
     if (!url || typeof url !== "string") return res.status(400).send("URL required");
     try {
       const response = await fetch(url);
+      const contentType = response.headers.get("content-type") ?? "";
+      const isPdf = url.toLowerCase().endsWith(".pdf") || contentType.includes("application/pdf");
+
+      if (isPdf) {
+        const buffer = await response.arrayBuffer();
+        const base64 = Buffer.from(buffer).toString("base64");
+        const filename = url.split("/").pop()?.split("?")[0] || "document.pdf";
+        return res.json({ content: base64, content_type: "pdf", title: filename });
+      }
+
       const html = await response.text();
-      res.json({ html });
-    } catch {
+      const turndown = new TurndownService({ headingStyle: "atx", bulletListMarker: "-" });
+
+      // Render <a> containing any <img> as just the image, dropping the link wrapper
+      turndown.addRule("linkedImage", {
+        filter: (node) =>
+          node.nodeName === "A" && !!(node as Element).querySelector("img"),
+        replacement: (_content, node) => {
+          const img = (node as Element).querySelector("img");
+          if (!img) return "";
+          const src = img.getAttribute("src") ?? "";
+          const alt = img.getAttribute("alt") ?? "";
+          return src ? `\n\n![${alt}](${src})\n\n` : "";
+        },
+      });
+
+      // Strip leftover URL artifacts from Turndown
+      const cleanMarkdown = (md: string) =>
+        md
+          // Convert linked images [![alt](src)](url) → ![alt](src)
+          .replace(/\[!\[([^\]]*)\]\(([^)]*)\)\]\([^)]*\)/g, "![$1]($2)")
+          // Remove bare (url) not preceded by ] (i.e. not part of a valid markdown link)
+          .replace(/(?<!\])\(https?:\/\/[^)\s]+\)/g, "")
+          .replace(/\n{3,}/g, "\n\n");
+
+      // Try Readability on the static HTML first
+      const dom = new JSDOM(html, { url });
+      const article = new Readability(dom.window.document).parse();
+
+      // If Readability got real content, use it (check text length to avoid falling through on HTML-heavy but text-empty pages)
+      if (article && article.textContent && article.textContent.trim().length > 200) {
+        const markdown = cleanMarkdown(turndown.turndown(article.content));
+        const title = article.title || url.split("/").pop() || "Article";
+        return res.json({ content: markdown, content_type: "markdown", title });
+      }
+
+      // Fallback: use Puppeteer to render JS and retry Readability
+      console.log(`[fetch-content] Readability insufficient, using Puppeteer for ${url}`);
+      const browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox"] });
+      try {
+        const page = await browser.newPage();
+        await page.setViewport({ width: 1280, height: 800 });
+        await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+
+        // Dismiss cookie/consent dialogs if present (click any "Accept" button)
+        await page.evaluate(() => {
+          const accept = Array.from(document.querySelectorAll('button'))
+            .find(b => /^accept$/i.test(b.textContent?.trim() ?? ''));
+          if (accept) (accept as HTMLElement).click();
+        });
+
+        // Wait for meaningful content to appear, then settle
+        await Promise.race([
+          page.waitForSelector('article, [class*="post-content"], [class*="body-markup"], [class*="available-content"]', { timeout: 12000 }).catch(() => {}),
+          new Promise(r => setTimeout(r, 12000)),
+        ]);
+        // Allow JS to finish populating the content after the element appears
+        await new Promise(r => setTimeout(r, 2000));
+
+        const renderedHtml = await page.content();
+        const pageTitle = await page.title();
+        const renderedDom = new JSDOM(renderedHtml, { url });
+        const renderedArticle = new Readability(renderedDom.window.document).parse();
+        const markdown = cleanMarkdown(renderedArticle
+          ? turndown.turndown(renderedArticle.content)
+          : turndown.turndown(renderedDom.window.document.body?.innerHTML ?? ""));
+        return res.json({
+          content: markdown,
+          content_type: "markdown",
+          title: renderedArticle?.title || pageTitle || url.split("/").pop() || "Page",
+        });
+      } finally {
+        await browser.close();
+      }
+    } catch (err) {
+      console.error("[fetch-content] error:", err);
       res.status(500).json({ error: "Failed to fetch content" });
     }
   });

@@ -9,6 +9,7 @@ Save articles, highlights, and reading progress. Everything lives in a SQLite da
 - **Save articles** from any URL — content is extracted server-side and stored locally
 - **Offline reading** — all bookmarks are mirrored to IndexedDB so the app works without a connection
 - **LAN sync** — devices discover each other via mDNS (Bonjour) and sync changes using [cr-sqlite](https://github.com/vlcn-io/cr-sqlite) CRDTs (last-write-wins per column, no manual conflict resolution)
+- **Downloads** — save articles to a local IndexedDB store for offline access, or export them as `.md` / `.pdf` files; a dedicated Downloads section lets you re-download or remove saved entries
 - **Voice highlights** — say "highlight [text]" while reading to create a highlight via the Web Speech API
 - **Adjustable reader** — font size controls, clean Markdown rendering
 

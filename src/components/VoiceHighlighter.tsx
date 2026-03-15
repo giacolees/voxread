@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Mic, MicOff } from 'lucide-react';
 
 interface VoiceHighlighterProps {
@@ -9,46 +9,54 @@ interface VoiceHighlighterProps {
 export const VoiceHighlighter: React.FC<VoiceHighlighterProps> = ({ onHighlight, isActive }) => {
   const [isListening, setIsListening] = useState(false);
   const recognitionRef = useRef<any>(null);
+  const isListeningRef = useRef(false);
+  const onHighlightRef = useRef(onHighlight);
+
+  useEffect(() => { onHighlightRef.current = onHighlight; }, [onHighlight]);
 
   useEffect(() => {
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (SpeechRecognition) {
-      const recognition = new SpeechRecognition();
-      recognition.continuous = true;
-      recognition.interimResults = false;
-      recognition.lang = 'en-US';
+    if (!SpeechRecognition) return;
 
-      recognition.onresult = (event: any) => {
-        const last = event.results.length - 1;
-        const text = event.results[last][0].transcript.trim().toLowerCase();
-        
-        // Trigger highlight if user says "highlight [text]"
-        if (text.startsWith('highlight ')) {
-          const phraseToHighlight = text.replace('highlight ', '');
-          onHighlight(phraseToHighlight);
-        }
-      };
+    const recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = false;
+    recognition.lang = 'en-US';
 
-      recognition.onend = () => {
-        if (isListening) {
-          recognition.start();
-        }
-      };
+    recognition.onresult = (event: any) => {
+      const last = event.results.length - 1;
+      const text = event.results[last][0].transcript.trim().toLowerCase();
+      if (text.startsWith('highlight ')) {
+        onHighlightRef.current(text.slice('highlight '.length));
+      }
+    };
 
-      recognitionRef.current = recognition;
-    }
-  }, [onHighlight, isListening]);
+    recognition.onend = () => {
+      if (isListeningRef.current) {
+        recognition.start();
+      }
+    };
+
+    recognitionRef.current = recognition;
+
+    return () => {
+      recognition.onend = null;
+      recognition.onresult = null;
+      if (isListeningRef.current) recognition.stop();
+    };
+  }, []); // created once — refs handle live values
 
   const toggleListening = () => {
     if (!recognitionRef.current) {
       alert('Speech recognition not supported in this browser.');
       return;
     }
-
-    if (isListening) {
+    if (isListeningRef.current) {
+      isListeningRef.current = false;
       recognitionRef.current.stop();
       setIsListening(false);
     } else {
+      isListeningRef.current = true;
       recognitionRef.current.start();
       setIsListening(true);
     }

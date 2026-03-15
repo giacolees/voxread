@@ -1,10 +1,10 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { Plus, Library, Settings, Search, RefreshCw, Wifi, WifiOff } from 'lucide-react';
+import { Plus, Library, Settings, Search, RefreshCw, Wifi, WifiOff, Download, BookOpen, FileText, FileType, Trash2 } from 'lucide-react';
 import { Bookmark, Highlight } from './types';
 import { api } from './services/api';
-import { saveBookmarkOffline, getOfflineBookmarks, deleteBookmarkOffline, saveHighlightOffline, getHighlightsOffline } from './services/db';
+import { saveBookmarkOffline, getOfflineBookmarks, deleteBookmarkOffline, saveHighlightOffline, getHighlightsOffline, getDownloadedIds, getDownloads, getBookmarkOffline, deleteDownload, DownloadRecord } from './services/db';
 import { BookmarkCard } from './components/BookmarkCard';
-import { Reader } from './components/Reader';
+import { Reader, downloadAsFile, saveToLocalDb } from './components/Reader';
 import { motion, AnimatePresence } from 'motion/react';
 
 export default function App() {
@@ -16,6 +16,8 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [syncPeers, setSyncPeers] = useState<{ id: string; name: string; lastSynced: number }[]>([]);
+  const [downloadedIds, setDownloadedIds] = useState<Set<string>>(new Set());
+  const [downloads, setDownloads] = useState<DownloadRecord[]>([]);
 
   const fetchData = useCallback(async () => {
     try {
@@ -31,6 +33,16 @@ export default function App() {
       console.error('Failed to fetch bookmarks:', error);
     }
   }, [isOnline]);
+
+  const refreshDownloads = useCallback(async () => {
+    const [ids, records] = await Promise.all([getDownloadedIds(), getDownloads()]);
+    setDownloadedIds(ids);
+    setDownloads(records);
+  }, []);
+
+  useEffect(() => {
+    refreshDownloads();
+  }, [refreshDownloads]);
 
   useEffect(() => {
     fetchData();
@@ -63,12 +75,13 @@ export default function App() {
     if (!newUrl) return;
     setIsLoading(true);
     try {
-      const { html } = await api.fetchContent(newUrl);
+      const { content, content_type, title: fetchedTitle } = await api.fetchContent(newUrl);
       const newBookmark: Bookmark = {
         id: crypto.randomUUID(),
         url: newUrl,
-        title: newUrl.split('/').pop() || 'New Article',
-        content: html,
+        title: fetchedTitle || newUrl.split('/').pop() || 'New Article',
+        content,
+        content_type,
         category: 'to read',
         status: 'unread',
         progress: 0,
@@ -92,7 +105,9 @@ export default function App() {
     try {
       if (isOnline) await api.deleteBookmark(id);
       await deleteBookmarkOffline(id);
+      await deleteDownload(id);
       setBookmarks(prev => prev.filter(b => b.id !== id));
+      await refreshDownloads();
     } catch (error) {
       console.error('Delete failed:', error);
     }
@@ -206,6 +221,9 @@ export default function App() {
                   bookmark={bookmark}
                   onRead={handleRead}
                   onDelete={handleDelete}
+                  isDownloaded={downloadedIds.has(bookmark.id)}
+                  onSaveOffline={async (b) => { await saveToLocalDb(b); await refreshDownloads(); }}
+                  onDownloadFile={(b) => downloadAsFile(b)}
                 />
               </motion.div>
             ))}
@@ -220,6 +238,64 @@ export default function App() {
             <h3 className="text-lg font-medium text-stone-600">No bookmarks found</h3>
             <p className="text-stone-400 text-sm">Start by adding a link to your library.</p>
           </div>
+        )}
+
+        {/* Downloads Section */}
+        {downloads.length > 0 && (
+          <section className="mt-12">
+            <div className="flex items-center gap-2 mb-4">
+              <Download size={18} className="text-stone-500" />
+              <h2 className="text-lg font-serif font-semibold text-stone-800">Downloads</h2>
+              <span className="ml-1 text-xs font-semibold text-stone-400 bg-stone-100 px-2 py-0.5 rounded-full">{downloads.length}</span>
+            </div>
+            <div className="space-y-2">
+              {downloads.map((record) => (
+                <div
+                  key={record.id}
+                  className="flex items-center gap-4 bg-white border border-stone-200 rounded-xl px-4 py-3 shadow-sm"
+                >
+                  <div className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg bg-stone-100 text-stone-500">
+                    {record.content_type === 'pdf' ? <FileType size={16} /> : <FileText size={16} />}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-stone-800 truncate">{record.title}</p>
+                    <p className="text-[11px] text-stone-400 mt-0.5">
+                      {record.content_type.toUpperCase()} · {new Date(record.downloaded_at).toLocaleString()}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      onClick={async () => {
+                        const bm = bookmarks.find(b => b.id === record.id) ?? await getBookmarkOffline(record.id);
+                        if (bm) handleRead(bm);
+                      }}
+                      className="p-1.5 text-stone-400 hover:text-stone-700 hover:bg-stone-100 rounded-lg transition-colors"
+                      title="Read"
+                    >
+                      <BookOpen size={16} />
+                    </button>
+                    <button
+                      onClick={async () => {
+                        const bm = bookmarks.find(b => b.id === record.id) ?? await getBookmarkOffline(record.id);
+                        if (bm) { downloadAsFile(bm); }
+                      }}
+                      className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors"
+                      title="Re-download"
+                    >
+                      <Download size={16} />
+                    </button>
+                    <button
+                      onClick={async () => { await deleteDownload(record.id); await refreshDownloads(); }}
+                      className="p-1.5 text-stone-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                      title="Remove from downloads"
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
         )}
       </main>
 
